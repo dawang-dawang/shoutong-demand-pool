@@ -206,12 +206,25 @@ async function loadProfile() {
 }
 async function doLogin(phone, password) {
   const email = phone.trim() + EMAIL_DOMAIN;
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) throw new Error(error.message === 'Invalid login credentials' ? '手机号或密码错误' : error.message);
-  state.session = data.session;
-  await loadProfile();
-  if (!state.profile) throw new Error('账号档案不存在，请联系管理员');
-  if (state.profile.status !== 'active') { await sb.auth.signOut(); throw new Error('账号已停用，请联系管理员'); }
+  // 网络偶发抖动（Failed to fetch）时自动重试，最多 3 次
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message === 'Invalid login credentials' ? '手机号或密码错误' : error.message);
+      state.session = data.session;
+      await loadProfile();
+      if (!state.profile) throw new Error('账号档案不存在，请联系管理员');
+      if (state.profile.status !== 'active') { await sb.auth.signOut(); throw new Error('账号已停用，请联系管理员'); }
+      return;
+    } catch (e) {
+      lastErr = e;
+      const transient = /failed to fetch|network|timeout|abort/i.test(String(e && e.message));
+      if (!transient || attempt === 2) throw e;
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  }
+  throw lastErr;
 }
 async function doLogout() { await sb.auth.signOut(); location.hash = '#/login'; }
 
