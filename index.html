@@ -83,6 +83,7 @@ table.tbl .no{font-family:ui-monospace,Consolas,monospace;color:var(--primary);f
 .login-card .inp{width:100%;padding:11px 14px}
 .login-card .btn{width:100%;justify-content:center;padding:11px;font-size:15px;margin-top:8px}
 .login-err{background:var(--red-soft);color:var(--red);padding:9px 14px;border-radius:8px;font-size:13px;margin-bottom:14px;display:none}
+.login-hint{color:var(--amber);background:var(--amber-soft);padding:8px 14px;border-radius:8px;font-size:13px;margin-top:12px;display:none;text-align:center}
 
 /* ===== 筛选栏 ===== */
 .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
@@ -206,12 +207,19 @@ async function loadProfile() {
 }
 async function doLogin(phone, password) {
   const email = phone.trim() + EMAIL_DOMAIN;
-  // 网络偶发抖动（Failed to fetch）时自动重试，最多 3 次
+  // 网络偶发抖动（Failed to fetch / NetworkError / ERR_CONNECTION_RESET）时自动重试，间隔递增
+  const DELAYS = [1500, 2500, 4000, 6000];
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt <= DELAYS.length; attempt++) {
     try {
       const { data, error } = await sb.auth.signInWithPassword({ email, password });
-      if (error) throw new Error(error.message === 'Invalid login credentials' ? '手机号或密码错误' : error.message);
+      if (error) {
+        const m = String(error.message || '');
+        if (/invalid login credentials/i.test(m)) throw new Error('手机号或密码错误');
+        if (/email not confirmed/i.test(m)) throw new Error('账号未验证，请联系管理员');
+        if (/too many requests|rate limit/i.test(m)) throw new Error('尝试过于频繁，请稍后再试');
+        throw new Error(m);
+      }
       state.session = data.session;
       await loadProfile();
       if (!state.profile) throw new Error('账号档案不存在，请联系管理员');
@@ -219,9 +227,15 @@ async function doLogin(phone, password) {
       return;
     } catch (e) {
       lastErr = e;
-      const transient = /failed to fetch|network|timeout|abort/i.test(String(e && e.message));
-      if (!transient || attempt === 2) throw e;
-      await new Promise((r) => setTimeout(r, 1200));
+      // 网络类错误才重试；密码错这类确定性错误直接抛出
+      const transient = /failed to fetch|networkerror|network error|load failed|timeout|abort|connection reset|err_connection/i.test(String(e && e.message));
+      if (!transient || attempt === DELAYS.length) {
+        if (transient) throw new Error('网络连接失败（已重试 ' + DELAYS.length + ' 次），请检查网络或代理后重试');
+        throw e;
+      }
+      const next = attempt + 1;
+      if (typeof window.__loginRetryHook === 'function') window.__loginRetryHook(next, DELAYS.length);
+      await new Promise((r) => setTimeout(r, DELAYS[attempt]));
     }
   }
   throw lastErr;
@@ -295,21 +309,38 @@ function renderLogin(err) {
           <input class="inp" id="inpPwd" type="password" placeholder="请输入密码" autocomplete="current-password">
         </div>
         <button class="btn primary" id="btnLogin">登 录</button>
+        <div class="login-hint" id="loginHint"></div>
       </div>
     </div>`;
   if (err) $('#loginErr').style.display = 'block';
+  // 重试进度提示（由 doLogin 内部回调驱动）
+  window.__loginRetryHook = (n, total) => {
+    const h = $('#loginHint');
+    if (h) { h.textContent = `网络不稳定，正在重试（${n}/${total}）…`; h.style.display = 'block'; }
+  };
   const submit = async () => {
     const phone = $('#inpPhone').value.trim();
     const pwd = $('#inpPwd').value;
-    if (!/^1\d{10}$/.test(phone)) { $('#loginErr').textContent = '请输入 11 位手机号'; $('#loginErr').style.display = 'block'; return; }
-    if (!pwd) { $('#loginErr').textContent = '请输入密码'; $('#loginErr').style.display = 'block'; return; }
+    const errEl = $('#loginErr'), hintEl = $('#loginHint');
+    if (!/^1\d{10}$/.test(phone)) { errEl.textContent = '请输入 11 位手机号'; errEl.style.display = 'block'; return; }
+    if (!pwd) { errEl.textContent = '请输入密码'; errEl.style.display = 'block'; return; }
+    errEl.style.display = 'none'; if (hintEl) hintEl.style.display = 'none';
     const btn = $('#btnLogin'); btn.disabled = true; btn.textContent = '登录中…';
     try {
       await doLogin(phone, pwd);
       location.hash = '#/list';
     } catch (e) {
-      $('#loginErr').textContent = e.message; $('#loginErr').style.display = 'block';
+      const msg = String((e && e.message) || '登录失败');
+      // 网络类错误给「重试」按钮
+      const isNet = /网络连接失败|网络不稳定|网络/i.test(msg);
+      errEl.innerHTML = esc(msg) + (isNet ? ' <button class="btn sm" id="btnRetryLogin" style="margin-left:6px">重试</button>' : '');
+      errEl.style.display = 'block';
       btn.disabled = false; btn.textContent = '登 录';
+      const rb = $('#btnRetryLogin');
+      if (rb) rb.onclick = submit;
+    } finally {
+      if (hintEl) hintEl.style.display = 'none';
+      window.__loginRetryHook = null;
     }
   };
   $('#btnLogin').onclick = submit;
