@@ -600,7 +600,6 @@ async function renderAdmin(my) {
   ]);
   const lastSync = (cfg || []).find((x) => x.key === 'last_sync_at');
   if (isStale(my)) return;
-  const interval = (cfg || []).find((x) => x.key === 'sync_interval_minutes');
   const lastLog = (logs || [])[0];
 
   pb.innerHTML = `
@@ -609,7 +608,7 @@ async function renderAdmin(my) {
       <div class="stat"><div class="v">${tCount || 0}</div><div class="k">需求工单</div></div>
       <div class="stat"><div class="v">${mCount || 0}</div><div class="k">会话记录</div></div>
       <div class="stat"><div class="v" style="font-size:15px;line-height:38px">${lastSync && lastSync.value ? fmtTime(lastSync.value) : '—'}</div><div class="k">最近同步时间</div></div>
-      <div class="stat"><div class="v">${interval ? esc(interval.value) : '30'} <span class="small muted">分钟</span></div><div class="k">自动同步间隔</div></div>
+      <div class="stat"><div class="v" style="font-size:15px;line-height:38px">手动</div><div class="k">同步方式</div></div>
       <div class="stat"><div class="v" style="font-size:15px;line-height:38px">${lastLog ? `<span class="badge ${lastLog.status}">${lastLog.status === 'success' ? '成功' : lastLog.status === 'failed' ? '失败' : '进行中'}</span>` : '—'}</div><div class="k">最近一次同步结果</div></div>
     </div>
 
@@ -663,7 +662,7 @@ async function renderAdmin(my) {
       新增用户：请让管理员在 Supabase 控制台 Authentication → Users 创建账号（邮箱格式：手机号${EMAIL_DOMAIN}），注册后自动建档为普通用户，可在此提升为管理员。
     </div></div>
 
-    <h2 class="sec">手动同步</h2>
+    <h2 class="sec">同步（手动触发）</h2>
     <div class="panel"><div class="pbody" id="syncPanel"><span class="muted small">检测本地同步服务…</span></div></div>`;
 
   $$('[data-resolve]', pb).forEach((el) => {
@@ -717,7 +716,7 @@ async function initSyncPanel() {
         <span class="muted small">手动同步需要采集机上的本地服务在线。启动命令：</span>
       </div>
       <div style="background:#f6f8fb;border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-top:8px;font-family:ui-monospace,Consolas,monospace;color:#334">cd /d D:\\我的软件\\售后通需求池 &amp;&amp; node src\\tools\\start.js</div>
-      <div class="muted small" style="margin-top:6px">自动同步每 60 分钟执行一次，不受此影响。</div>`;
+      <div class="muted small" style="margin-top:6px">同步由你手动触发：采集机上的本地服务启动后，点上面按钮即可立即同步，登录验证码会在本页面弹出。</div>`;
     return;
   }
   const render = (st) => {
@@ -736,7 +735,9 @@ async function initSyncPanel() {
           <img src="${SYNC_API}/api/captcha.png?t=${Date.now()}" style="height:40px;border-radius:6px;border:1px solid var(--line);background:#fff" alt="验证码">
           <input class="inp" id="capAnswer" maxlength="4" placeholder="4 位数字" style="width:110px">
           <button class="btn primary sm" id="btnCap">提交</button>
-        </div>`;
+          <button class="btn sm" id="btnCapReload">重新获取</button>
+        </div>
+        <div class="muted small" style="margin-top:6px">看不清可点「重新获取」刷新图片；验证码约 2 分钟内有效。</div>`;
     } else if (running) {
       html += `<div class="muted small" style="margin-top:10px">同步进行中…（登录售后通 → 拉取工单 → 写库，约需 1-8 分钟）</div>`;
     }
@@ -768,6 +769,11 @@ async function initSyncPanel() {
       };
       capBtn.onclick = submitCap;
       $('#capAnswer').onkeydown = (e) => { if (e.key === 'Enter') submitCap(); };
+      const rl = $('#btnCapReload');
+      if (rl) rl.onclick = () => {
+        const img = el.querySelector('img[alt="验证码"]');
+        if (img) img.src = SYNC_API + '/api/captcha.png?t=' + Date.now();
+      };
     }
   };
   const poll = async () => {
